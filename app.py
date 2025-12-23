@@ -27,6 +27,13 @@ ws_handler.setFormatter(formatter)
 # Добавляем обработчик ко всем логгерам
 root_logger = logging.getLogger()
 root_logger.addHandler(ws_handler)
+root_logger.setLevel(logging.INFO)
+
+# Настраиваем логирование для модулей проекта
+for module_name in ["services.candidate_search", "services.vector_store", "api.routes"]:
+    module_logger = logging.getLogger(module_name)
+    module_logger.setLevel(logging.INFO)
+    module_logger.addHandler(ws_handler)
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +79,8 @@ async def root():
     html_file = static_dir / "index.html"
     if html_file.exists():
         return html_file.read_text(encoding="utf-8")
-    return HTMLResponse(content="""
+    return HTMLResponse(
+        content="""
     <html>
         <head><title>Estaff HR Service</title></head>
         <body>
@@ -80,4 +88,5 @@ async def root():
             <p>UI доступен по адресу /static/index.html</p>
         </body>
     </html>
-    """)
+    """
+    )

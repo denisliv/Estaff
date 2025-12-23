@@ -129,6 +129,7 @@ class CandidateSearchService:
             Список оцененных кандидатов
         """
         logger.info(f"Начинаю поиск кандидатов по вакансии. k={k}")
+        logger.info("Выполняю поиск в векторной базе данных...")
 
         # Поиск в векторной БД
         docs_with_scores = self.vector_store_service.search_with_filter(
@@ -138,48 +139,66 @@ class CandidateSearchService:
             grade=grade,
         )
 
+        logger.info(f"Найдено {len(docs_with_scores)} документов в векторной БД")
+
         if not docs_with_scores:
             logger.warning("Не найдено кандидатов по запросу")
             return []
 
         # Загрузка полных данных кандидатов из PostgreSQL
+        logger.info("Загружаю полные данные кандидатов из PostgreSQL...")
         df = get_candidates_from_db()
-        candidates_contexts = []
+        logger.info(f"Загружено {len(df)} кандидатов из PostgreSQL")
 
-        for doc, score in docs_with_scores:
+        candidates_contexts = []
+        processed_count = 0
+
+        logger.info("Обрабатываю найденных кандидатов...")
+        for idx, (doc, score) in enumerate(docs_with_scores, 1):
             candidate_id = doc.metadata.get("candidate_id")
 
             if candidate_id is None:
                 logger.warning(
-                    "В метаданных документа отсутствует candidate_id, пропускаю"
+                    f"[{idx}/{len(docs_with_scores)}] В метаданных документа отсутствует candidate_id, пропускаю"
                 )
                 continue
 
             candidate_row = df[df["id"] == candidate_id]
             if candidate_row.empty:
                 logger.warning(
-                    f"Кандидат с id={candidate_id} не найден в БД, пропускаю"
+                    f"[{idx}/{len(docs_with_scores)}] Кандидат с id={candidate_id} не найден в БД, пропускаю"
                 )
                 continue
 
             candidate_row = candidate_row.iloc[0]
             candidate_context = self._build_candidate_context(doc, candidate_row)
             candidates_contexts.append(candidate_context)
+            processed_count += 1
+            logger.info(
+                f"[{idx}/{len(docs_with_scores)}] Обработан кандидат: {candidate_row['fullname']} (релевантность: {score:.3f})"
+            )
+
+        logger.info(
+            f"Успешно обработано {processed_count} из {len(docs_with_scores)} кандидатов"
+        )
 
         if not candidates_contexts:
             logger.warning("Не удалось получить контексты кандидатов")
             return []
 
         # Оценка кандидатов через LLM
-        logger.info("Оцениваю кандидатов через LLM...")
+        logger.info(
+            f"Отправляю запрос к LLM для оценки {len(candidates_contexts)} кандидатов..."
+        )
         evaluation_prompt = self._build_evaluation_prompt(
             vacancy_description, candidates_contexts
         )
 
         try:
+            logger.info("Ожидаю ответ от LLM...")
             result = self.llm.invoke(evaluation_prompt)
+            logger.info("Получен ответ от LLM, начинаю парсинг...")
             evaluations = self._parse_llm_response(result.content)
-
             logger.info(f"Успешно оценено {len(evaluations)} кандидатов")
             return evaluations
 

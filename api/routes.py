@@ -1,5 +1,6 @@
 """API роуты для FastAPI приложения."""
 
+import asyncio
 import logging
 import queue
 
@@ -25,8 +26,8 @@ from services.vector_store import VectorStoreService
 
 logger = logging.getLogger(__name__)
 
-# Очередь для логов (для WebSocket)
-log_queue: queue.Queue = queue.Queue()
+# Очередь для логов (для WebSocket) - ограниченная очередь для предотвращения переполнения
+log_queue: queue.Queue = queue.Queue(maxsize=1000)
 
 router = APIRouter()
 
@@ -49,13 +50,20 @@ async def search_candidates(request: VacancySearchRequest):
             f"Получен запрос на поиск кандидатов: {request.description[:100]}..."
         )
 
-        candidates = candidate_search_service.search_candidates(
-            vacancy_description=request.description,
-            k=request.k,
-            experience_years_min=request.experience_years_min,
-            grade=request.grade,
+        # Выполняем поиск в отдельном потоке, чтобы не блокировать event loop
+        # Это позволяет WebSocket отправлять логи в реальном времени
+        loop = asyncio.get_event_loop()
+        candidates = await loop.run_in_executor(
+            None,
+            lambda: candidate_search_service.search_candidates(
+                vacancy_description=request.description,
+                k=request.k,
+                experience_years_min=request.experience_years_min,
+                grade=request.grade,
+            ),
         )
 
+        logger.info(f"Поиск завершен. Найдено кандидатов: {len(candidates)}")
         return VacancySearchResponse(
             candidates=candidates,
             total_found=len(candidates),
@@ -192,18 +200,31 @@ async def websocket_logs(websocket: WebSocket):
     """WebSocket эндпоинт для получения логов в реальном времени."""
     await websocket.accept()
     try:
+        # Отправляем все логи из очереди сразу после подключения
+        initial_logs_sent = 0
         while True:
-            # Отправляем логи из очереди
             try:
                 log_message = log_queue.get_nowait()
                 await websocket.send_json(log_message)
+                initial_logs_sent += 1
             except queue.Empty:
-                # Если очередь пуста, ждем немного
-                import asyncio
+                break
 
-                await asyncio.sleep(0.1)
+        # Теперь отправляем новые логи по мере их поступления
+        while True:
+            try:
+                # Проверяем очередь на наличие новых логов
+                log_message = log_queue.get_nowait()
+                await websocket.send_json(log_message)
+            except queue.Empty:
+                # Если очередь пуста, ждем немного перед следующей проверкой
+                await asyncio.sleep(
+                    0.05
+                )  # Небольшая задержка для снижения нагрузки на CPU
     except WebSocketDisconnect:
         logger.info("WebSocket клиент отключился")
+    except Exception as e:
+        logger.error(f"Ошибка в WebSocket соединении: {e}", exc_info=True)
 
 
 @router.get("/health")

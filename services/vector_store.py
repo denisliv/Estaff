@@ -128,11 +128,17 @@ class VectorStoreService:
             qdrant_filter = Filter(must=filter_conditions)
 
         try:
+            logger.info(
+                f"Выполняю поиск в Qdrant с параметрами: k={k}, experience_years_min={experience_years_min}, grade={grade}"
+            )
+
             if qdrant_filter:
+                logger.info("Применяю фильтры к поиску")
                 docs_with_scores = qdrant.similarity_search_with_relevance_scores(
                     query, k=k, filter=qdrant_filter
                 )
             else:
+                logger.info("Поиск без фильтров")
                 docs_with_scores = qdrant.similarity_search_with_relevance_scores(
                     query, k=k
                 )
