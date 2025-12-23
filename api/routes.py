@@ -1,17 +1,32 @@
 """API роуты для FastAPI приложения."""
 
 import logging
+import queue
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
-from fastapi.responses import JSONResponse
+import psycopg2
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    HTTPException,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from models.api import VacancySearchRequest, VacancySearchResponse
 from services.candidate_search import CandidateSearchService
-from services.data_loader import get_candidates_from_db, update_postgres_database
+from services.data_loader import (
+    get_candidates_from_db,
+    get_db_config,
+    update_postgres_database,
+)
 from services.resume_processor import ResumeProcessor
 from services.vector_store import VectorStoreService
 
 logger = logging.getLogger(__name__)
+
+# Очередь для логов (для WebSocket)
+log_queue: queue.Queue = queue.Queue()
 
 router = APIRouter()
 
@@ -134,6 +149,61 @@ async def update_vector_database(background_tasks: BackgroundTasks):
             status_code=500,
             detail=f"Ошибка при запуске обновления векторной БД: {str(e)}",
         )
+
+
+@router.get("/candidate/resume")
+async def get_candidate_resume(name: str, phone: str):
+    """
+    Получает HTML резюме кандидата по имени и телефону.
+
+    Args:
+        name: Имя кандидата
+        phone: Телефон кандидата
+    """
+    try:
+        db_config = get_db_config()
+
+        # Используем параметризованные запросы для безопасности
+        with psycopg2.connect(**db_config) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT html FROM candidates WHERE fullname = %s AND mobile_phone = %s LIMIT 1",
+                    (name, phone),
+                )
+                result = cur.fetchone()
+
+                if result is None or result[0] is None:
+                    raise HTTPException(status_code=404, detail="Резюме не найдено")
+
+                html_resume = result[0]
+                return HTMLResponse(content=html_resume)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Ошибка при получении резюме: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Ошибка при получении резюме: {str(e)}"
+        )
+
+
+@router.websocket("/ws/logs")
+async def websocket_logs(websocket: WebSocket):
+    """WebSocket эндпоинт для получения логов в реальном времени."""
+    await websocket.accept()
+    try:
+        while True:
+            # Отправляем логи из очереди
+            try:
+                log_message = log_queue.get_nowait()
+                await websocket.send_json(log_message)
+            except queue.Empty:
+                # Если очередь пуста, ждем немного
+                import asyncio
+
+                await asyncio.sleep(0.1)
+    except WebSocketDisconnect:
+        logger.info("WebSocket клиент отключился")
 
 
 @router.get("/health")
