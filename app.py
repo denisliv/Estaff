@@ -24,18 +24,31 @@ ws_handler.setLevel(logging.INFO)
 formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 ws_handler.setFormatter(formatter)
 
-# Добавляем обработчик ко всем логгерам
-root_logger = logging.getLogger()
-root_logger.addHandler(ws_handler)
-root_logger.setLevel(logging.INFO)
+# Добавляем обработчик только к модулям проекта, чтобы избежать дублирования
+# НЕ добавляем к root logger, чтобы не получать логи от всех библиотек
+project_modules = [
+    "api",
+    "services",
+    "utils",
+    "db",
+    "config",
+    "models",
+]
 
-# Настраиваем логирование для модулей проекта
-for module_name in ["services.candidate_search", "services.vector_store", "api.routes"]:
+for module_name in project_modules:
     module_logger = logging.getLogger(module_name)
     module_logger.setLevel(logging.INFO)
-    module_logger.addHandler(ws_handler)
+    # Проверяем, что обработчик еще не добавлен, чтобы избежать дублирования
+    if ws_handler not in module_logger.handlers:
+        module_logger.addHandler(ws_handler)
+    # Отключаем распространение на root logger для этих модулей
+    module_logger.propagate = False
 
 logger = logging.getLogger(__name__)
+# Добавляем обработчик к логгеру app, чтобы видеть логи запуска/остановки
+if ws_handler not in logger.handlers:
+    logger.addHandler(ws_handler)
+logger.propagate = False
 
 
 @asynccontextmanager

@@ -4,12 +4,67 @@ import logging
 import queue
 
 
+class ApplicationLogFilter(logging.Filter):
+    """Фильтр для показа только логов из модулей приложения."""
+    
+    # Модули приложения, логи которых нужно показывать
+    ALLOWED_MODULES = {
+        "api",
+        "services",
+        "utils",
+        "db",
+        "config",
+        "models",
+        "scripts",
+    }
+    
+    # Библиотеки, логи которых нужно скрыть
+    EXCLUDED_MODULES = {
+        "fastapi",
+        "uvicorn",
+        "langchain",
+        "qdrant",
+        "pandas",
+        "psycopg2",
+        "requests",
+        "httpx",
+        "asyncio",
+        "aiofiles",
+    }
+    
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Фильтрует логи по имени модуля."""
+        # Получаем имя логгера (например, "services.candidate_search" или "fastapi")
+        logger_name = record.name
+        
+        # Разбиваем на части
+        parts = logger_name.split(".")
+        root_module = parts[0] if parts else ""
+        
+        # Исключаем логи из библиотек
+        if root_module in self.EXCLUDED_MODULES:
+            return False
+        
+        # Показываем только логи из модулей приложения
+        if root_module in self.ALLOWED_MODULES:
+            return True
+        
+        # Если имя логгера начинается с одного из наших модулей, показываем
+        for allowed in self.ALLOWED_MODULES:
+            if logger_name.startswith(allowed + ".") or logger_name == allowed:
+                return True
+        
+        return False
+
+
 class WebSocketLogHandler(logging.Handler):
     """Обработчик логов, который отправляет логи в очередь для WebSocket."""
 
     def __init__(self, log_queue: queue.Queue, maxsize: int = 1000):
         super().__init__()
         self.log_queue = log_queue
+        # Добавляем фильтр для показа только логов приложения
+        self.addFilter(ApplicationLogFilter())
         # Убеждаемся, что очередь имеет максимальный размер для предотвращения переполнения
         if hasattr(log_queue, "maxsize") and log_queue.maxsize == 0:
             # Если очередь неограниченная, это нормально
@@ -18,6 +73,10 @@ class WebSocketLogHandler(logging.Handler):
     def emit(self, record: logging.LogRecord):
         """Отправляет лог в очередь немедленно."""
         try:
+            # Проверяем фильтр перед обработкой
+            if not self.filter(record):
+                return
+            
             # Форматируем запись сразу
             formatted_time = (
                 self.format(record).split(" - ")[0]
@@ -29,7 +88,7 @@ class WebSocketLogHandler(logging.Handler):
                 "timestamp": formatted_time,
                 "level": record.levelname,
                 "message": record.getMessage(),
-                "module": record.module,
+                "module": record.name,  # Используем полное имя логгера для лучшей идентификации
             }
             # Неблокирующая отправка в очередь
             try:

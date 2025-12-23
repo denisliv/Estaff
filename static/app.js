@@ -22,7 +22,12 @@ function initWebSocket() {
     
     ws.onmessage = function(event) {
         const logData = JSON.parse(event.data);
-        addLog(logData.module || 'Система', logData.message, logData.level.toLowerCase());
+        addLog(
+            logData.module || 'Система', 
+            logData.message, 
+            logData.level.toLowerCase(),
+            logData.timestamp
+        );
     };
     
     ws.onerror = function(error) {
@@ -221,19 +226,24 @@ async function showResume(name, phone) {
 }
 
 // Добавление лога в контейнер
-function addLog(module, message, level) {
+function addLog(module, message, level, serverTimestamp = null) {
     const logsContainer = document.getElementById('logsContainer');
-    const timestamp = new Date().toLocaleTimeString('ru-RU');
+    
+    // Используем timestamp из сервера, если он есть, иначе текущее время
+    const timestamp = serverTimestamp || new Date().toLocaleTimeString('ru-RU');
     
     const logEntry = document.createElement('div');
     logEntry.className = 'log-entry';
     
     const levelClass = `log-level-${level}`;
     
+    // Краткое имя модуля для отображения (берем последнюю часть после точки)
+    const moduleDisplay = module.split('.').pop() || module;
+    
     logEntry.innerHTML = `
-        <span class="log-timestamp">[${timestamp}]</span>
+        <span class="log-timestamp">[${escapeHtml(timestamp)}]</span>
         <span class="${levelClass}">[${level.toUpperCase()}]</span>
-        <span class="log-message">[${module}] ${escapeHtml(message)}</span>
+        <span class="log-message">[${escapeHtml(moduleDisplay)}] ${escapeHtml(message)}</span>
     `;
     
     logsContainer.appendChild(logEntry);
@@ -241,9 +251,9 @@ function addLog(module, message, level) {
     // Автопрокрутка вниз
     logsContainer.scrollTop = logsContainer.scrollHeight;
     
-    // Ограничение количества логов (последние 100)
+    // Ограничение количества логов (последние 200)
     const logs = logsContainer.querySelectorAll('.log-entry');
-    if (logs.length > 100) {
+    if (logs.length > 200) {
         logs[0].remove();
     }
 }
