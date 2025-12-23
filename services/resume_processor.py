@@ -1,99 +1,24 @@
-import warnings
-from pathlib import Path
-from typing import List, Optional
+"""Сервис для обработки резюме через LLM и создания метаданных."""
+
+import logging
+from typing import List
 
 import pandas as pd
-import requests
 from langchain_core.documents import Document
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_ollama import OllamaEmbeddings
 from langchain_openai import ChatOpenAI
-from langchain_qdrant import QdrantVectorStore
-from pydantic import BaseModel, Field
-from qdrant_client import QdrantClient
 from tenacity import retry, stop_after_attempt, wait_fixed
 from tqdm import tqdm
 
-from db.db_manager import DB_CONFIG, fetch_candidates, insert_candidates
-from utils.utils import build_resume_row, deserialize_cell, extract_html_resume
+from config.settings import settings
+from models.candidate import CandidateMetadata
+from utils.utils import build_resume_row
 
-pd.set_option("display.max_columns", None)
-warnings.filterwarnings("ignore")
+logger = logging.getLogger(__name__)
 
-data_dir = Path("data")
-
-dfs = []
-
-for x in range(1, 26):
-    file_path = data_dir / f"data_fake_{x}.csv"
-    if file_path.is_file():
-        df_tmp = pd.read_csv(file_path)
-        df_tmp["data"] = df_tmp["data"].apply(deserialize_cell)
-        dfs.append(df_tmp)
-    else:
-        print(f"Файл {file_path} не найден.")
-
-df = pd.concat(dfs, ignore_index=True)
-
-df["html"] = df["data"].apply(extract_html_resume)
-df = df[df["html"].notna()].reset_index(drop=True).copy()
-df = df.drop_duplicates(subset=["id"], keep="last")
-
-insert_candidates(df, db_config=DB_CONFIG)
-
-df = fetch_candidates(db_config=DB_CONFIG)
-df["html_resume"] = df.apply(build_resume_row, axis=1)
-
-
-class LanguageSkill(BaseModel):
-    name: str = Field(description="Название языка")
-    level: Optional[str] = Field(
-        description="Уровень владения: 'A1', 'A2', 'B1', 'B2', 'C1', 'C2', 'Native' или null",
-        pattern=r"^(A[12]|B[12]|C[12]|Native)?$",
-    )
-
-
-class CandidateMetadata(BaseModel):
-    candidate_id: int = Field(description="Уникальный идентификатор кандидата")
-    location_name: Optional[str] = Field(description="Локация кандидата")
-
-    positions: List[str] = Field(
-        default_factory=list,
-        description="Список релевантных должностей, которые могут быть предложены кандидату",
-    )
-    experience_years: Optional[float] = Field(
-        ge=0,
-        description="Суммарный релевантный опыт в годах для указанной желаемой должности",
-    )
-    grade: Optional[str] = Field(
-        description="Уровень специалиста: Intern, Junior, Middle, Senior, Lead, Head или null",
-        pattern=r"^(Intern|Junior|Middle|Senior|Lead|Head)?$",
-    )
-    hard_skills: List[str] = Field(
-        default_factory=list,
-        description="Технические навыки и инструменты",
-    )
-    domain_skills: List[str] = Field(
-        default_factory=list,
-        description="Отраслевые и функциональные домены (предметные области)",
-    )
-    performed_tasks: List[str] = Field(
-        default_factory=list,
-        description="Фактически выполняемые профессиональные задачи",
-    )
-    languages: List[LanguageSkill] = Field(
-        default_factory=list, description="Языки с нормализованными уровнями владения"
-    )
-    embedding_text: str = Field(
-        description="Очищенный текст для генерации эмбеддинга: без личных данных, с ключевыми навыками и опытом"
-    )
-
-
-output_parser = PydanticOutputParser(pydantic_object=CandidateMetadata)
-format_instructions = output_parser.get_format_instructions()
-
-system_prompt = """ 
+# Системный промпт для извлечения метаданных из резюме
+SYSTEM_PROMPT = """ 
 Ты — эксперт по HR, рекрутингу и информационной экстракции в крупном банке. 
 Твоя задача — преобразовать текстовое описание кандидата в строго валидный JSON формата CandidateMetadata.
 
@@ -241,250 +166,150 @@ languages:
 {format_instructions}
 """
 
-user_prompt = """
+USER_PROMPT = """
 Проанализируй следующее резюме и извлеки структурированные данные строго по правилам:
 
 {resume}
 """
 
-prompt = ChatPromptTemplate.from_messages(
-    [("system", system_prompt), ("user", user_prompt)]
-)
 
-llm = ChatOpenAI(
-    base_url="http://localhost:11434/v1",
-    api_key="token-abc",
-    model="gpt-oss:20b",
-    temperature=0.3,
-    top_p=0.8,
-    max_tokens=1024,
-    reasoning_effort="low",
-    timeout=120,
-)
+class ResumeProcessor:
+    """Класс для обработки резюме через LLM."""
 
+    def __init__(self):
+        """Инициализация процессора резюме."""
+        self.llm = ChatOpenAI(
+            base_url=f"{settings.ollama_base_url}/v1",
+            api_key=settings.ollama_api_key,
+            model=settings.ollama_llm_model,
+            temperature=0.3,
+            top_p=0.8,
+            max_tokens=1024,
+            reasoning_effort="low",
+            timeout=120,
+        )
+        self.output_parser = PydanticOutputParser(pydantic_object=CandidateMetadata)
+        self.format_instructions = self.output_parser.get_format_instructions()
+        self.prompt = ChatPromptTemplate.from_messages(
+            [("system", SYSTEM_PROMPT), ("user", USER_PROMPT)]
+        )
 
-def fix_json_with_llm(format_instructions: str, broken_json_text: str) -> str:
-    system_fix_prompt = """ 
-    Ты AI помощник, который исправляет JSON.
-    Верни **валидный** JSON, строго соответствующий этой Pydantic-схеме.
-    {format_instructions}
-    """
-    user_fix_prompt = """ 
-    Исправь этот текст так, чтобы результат был корректным JSON:
-    {broken_json_text}
-    """
-    prompt = ChatPromptTemplate.from_messages(
-        [("system", system_fix_prompt), ("user", user_fix_prompt)]
-    )
+    def _fix_json_with_llm(self, broken_json_text: str) -> str:
+        """Исправляет некорректный JSON с помощью LLM."""
+        system_fix_prompt = """ 
+        Ты AI помощник, который исправляет JSON.
+        Верни **валидный** JSON, строго соответствующий этой Pydantic-схеме.
+        {format_instructions}
+        """
+        user_fix_prompt = """ 
+        Исправь этот текст так, чтобы результат был корректным JSON:
+        {broken_json_text}
+        """
+        prompt = ChatPromptTemplate.from_messages(
+            [("system", system_fix_prompt), ("user", user_fix_prompt)]
+        )
 
-    messages = prompt.format_messages(
-        format_instructions=format_instructions, broken_json_text=broken_json_text
-    )
-    fixed = llm.invoke(messages)
-    return fixed.content
+        messages = prompt.format_messages(
+            format_instructions=self.format_instructions,
+            broken_json_text=broken_json_text,
+        )
+        fixed = self.llm.invoke(messages)
+        return fixed.content
 
-
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(1))
-def call_llm_and_parse(messages):
-    result = llm.invoke(messages)
-    raw_text = result.content
-
-    try:
-        return output_parser.parse(raw_text)
-    except Exception as e:
-        print("Primary parse failed. Attempting automatic JSON repair...")
-        print(f"Original error: {e}")
-
-        fixed_json = fix_json_with_llm(raw_text)
+    @retry(stop=stop_after_attempt(3), wait=wait_fixed(1))
+    def _call_llm_and_parse(self, messages) -> CandidateMetadata:
+        """Вызывает LLM и парсит результат в CandidateMetadata."""
+        result = self.llm.invoke(messages)
+        raw_text = result.content
 
         try:
-            return output_parser.parse(fixed_json)
-        except Exception as e2:
-            print(f"JSON repair also failed: {e2}")
-            print(f"Repaired JSON candidate:\n{fixed_json}")
-            raise
+            return self.output_parser.parse(raw_text)
+        except Exception as e:
+            logger.warning(
+                f"Первичный парсинг не удался. Пытаюсь исправить JSON... Ошибка: {e}"
+            )
 
+            fixed_json = self._fix_json_with_llm(raw_text)
 
-parsed_results = []
+            try:
+                return self.output_parser.parse(fixed_json)
+            except Exception as e2:
+                logger.error(f"Исправление JSON также не удалось: {e2}")
+                logger.error(f"Исправленный JSON кандидат:\n{fixed_json}")
+                raise
 
-for resume in tqdm(df["html_resume"]):
-    messages = prompt.format_messages(
-        format_instructions=format_instructions, resume=resume
-    )
-
-    try:
-        parsed = call_llm_and_parse(messages)
-        parsed_results.append(parsed.model_dump())
-    except Exception:
-        print("Failed even after repair and retries")
-
-        QDRANT_URL = "http://localhost:6333"
-COLLECTION_NAME = "candidates"
-
-documents = []
-
-print("Проверяю соединение с Qdrant...")
-try:
-    health = requests.get(f"{QDRANT_URL}/collections").json()
-    if not health.get("status") == "ok":
-        print(
-            "Предупреждение: Qdrant доступен, но возвращает некорректный статус:",
-            health,
+    def process_resume(self, resume_text: str) -> CandidateMetadata:
+        """Обрабатывает одно резюме и возвращает метаданные."""
+        messages = self.prompt.format_messages(
+            format_instructions=self.format_instructions, resume=resume_text
         )
-except Exception as e:
-    raise ConnectionError(
-        f"Не удалось подключиться к Qdrant по адресу {QDRANT_URL}: {e}"
-    )
+        return self._call_llm_and_parse(messages)
 
-print("Начинаю обработку файлов...")
+    def process_resumes_batch(self, df: pd.DataFrame) -> List[dict]:
+        """
+        Обрабатывает батч резюме из DataFrame.
+        Ожидает, что в df есть колонка 'html_resume'.
+        """
+        logger.info(f"Начинаю обработку {len(df)} резюме через LLM...")
 
-for idx, item in enumerate(tqdm(parsed_results)):
-    if not item:
-        print(f"[WARN] Пустой объект в позиции {idx}. Пропускаю.")
-        continue
+        parsed_results = []
+        df["html_resume"] = df.apply(build_resume_row, axis=1)
 
-    if not isinstance(item, dict):
-        print(
-            f"[ERROR] Элемент №{idx} должен быть dict, но получен тип {type(item)}. Пропускаю."
-        )
-        continue
+        for resume in tqdm(df["html_resume"], desc="Обработка резюме"):
+            try:
+                parsed = self.process_resume(resume)
+                parsed_results.append(parsed.model_dump())
+            except Exception as e:
+                logger.error(f"Ошибка при обработке резюме: {e}", exc_info=True)
+                logger.warning("Пропускаю это резюме и продолжаю обработку...")
 
-    embedding_text = item.get("embedding_text")
+        logger.info(f"Успешно обработано {len(parsed_results)} из {len(df)} резюме")
+        return parsed_results
 
-    if embedding_text is None:
-        print(f"[ERROR] В объекте №{idx} отсутствует ключ 'embedding_text'. Пропускаю.")
-        continue
+    def convert_to_documents(self, parsed_results: List[dict]) -> List[Document]:
+        """
+        Конвертирует результаты обработки в список Document для Qdrant.
+        """
+        documents = []
 
-    if not isinstance(embedding_text, str):
-        print(
-            f"[ERROR] Значение 'embedding_text' в объекте №{idx} должно быть строкой. Пропускаю."
-        )
-        continue
+        for idx, item in enumerate(parsed_results):
+            if not item:
+                logger.warning(f"Пустой объект в позиции {idx}. Пропускаю.")
+                continue
 
-    metadata = {k: v for k, v in item.items() if k != "embedding_text"}
+            if not isinstance(item, dict):
+                logger.error(
+                    f"Элемент №{idx} должен быть dict, но получен тип {type(item)}. Пропускаю."
+                )
+                continue
 
-    try:
-        doc = Document(page_content=embedding_text, metadata=metadata)
-        documents.append(doc)
-    except Exception as e:
-        print(f"[ERROR] Ошибка при создании Document для объекта №{idx}: {e}")
-        continue
+            embedding_text = item.get("embedding_text")
 
+            if embedding_text is None:
+                logger.error(
+                    f"В объекте №{idx} отсутствует ключ 'embedding_text'. Пропускаю."
+                )
+                continue
 
-if not documents:
-    raise ValueError("После обработки нет валидных документов для загрузки в Qdrant.")
+            if not isinstance(embedding_text, str):
+                logger.error(
+                    f"Значение 'embedding_text' в объекте №{idx} должно быть строкой. Пропускаю."
+                )
+                continue
 
+            metadata = {k: v for k, v in item.items() if k != "embedding_text"}
 
-print(f"Готово к записи: {len(documents)} документов.")
+            try:
+                doc = Document(page_content=embedding_text, metadata=metadata)
+                documents.append(doc)
+            except Exception as e:
+                logger.error(f"Ошибка при создании Document для объекта №{idx}: {e}")
+                continue
 
-try:
-    embeddings = OllamaEmbeddings(
-        base_url="http://localhost:11434",
-        model="qwen3-embedding:0.6b",
-    )
-except Exception as e:
-    raise RuntimeError(f"Не удалось инициализировать OllamaEmbeddings: {e}")
+        if not documents:
+            raise ValueError(
+                "После обработки нет валидных документов для загрузки в Qdrant."
+            )
 
-
-print("Начинаю запись в Qdrant...")
-
-try:
-    qdrant = QdrantVectorStore.from_documents(
-        url=QDRANT_URL,
-        collection_name=COLLECTION_NAME,
-        embedding=embeddings,
-        documents=documents,
-    )
-except Exception as e:
-    raise RuntimeError(f"Ошибка при записи данных в Qdrant: {e}")
-
-print("Данные успешно записаны в Qdrant.")
-
-
-docs_found = qdrant.similarity_search("Юрист", k=3)
-for doc in docs_found:
-    print(doc.page_content)
-
-
-retriever = qdrant.as_retriever(search_type="similarity", search_kwargs={"k": 2})
-
-docs = retriever.invoke("ML инженер со знанием AI, LLM")
-for doc in docs:
-    print(doc.page_content)
-
-
-QDRANT_URL = "http://localhost:6333"
-COLLECTION_NAME = "candidates"
-
-client = QdrantClient(url=QDRANT_URL)
-
-embeddings = OllamaEmbeddings(
-    base_url="http://localhost:11434",
-    model="qwen3-embedding:0.6b",
-)
-
-qdrant = QdrantVectorStore(
-    client=client,
-    collection_name=COLLECTION_NAME,
-    embedding=embeddings,
-)
-
-from qdrant_client.http.models import FieldCondition, Filter, Range
-
-query = "ML инженер со знанием AI, LLM. Работа в банковской сфере. Разработка AI-ассистента."
-qdrant_filter = Filter(
-    must=[
-        FieldCondition(key="metadata.experience_years", range=Range(gte=1)),
-        # FieldCondition(key="metadata.grade", match={"value": "Senior"}),
-    ]
-)
-
-docs_with_scores = qdrant.similarity_search_with_relevance_scores(
-    query, k=5, filter=qdrant_filter
-)
-
-
-candidates_contexts = []
-
-for doc, score in docs_with_scores:
-    candidate_id = doc.metadata["candidate_id"]
-
-    candidate_row = df[df["id"] == candidate_id]
-    if candidate_row.empty:
-        continue
-    candidate_row = candidate_row.iloc[0]
-
-    name = candidate_row["fullname"]
-    phone = candidate_row.get("mobile_phone", "не указан")
-    location = candidate_row.get("location_name", "не указана")
-    page_content = doc.page_content
-
-    candidate_info = (
-        f"Имя: {name}\nТелефон: {phone}\nЛокация: {location}\nРезюме:\n{page_content}"
-    )
-    candidates_contexts.append(candidate_info)
-
-full_context = (
-    f"Описание вакансии:\n{query}\n\n"
-    f"Рассмотри следующих кандидатов и оцени каждого по следующим критериям:\n"
-    f"- Хард-скиллы (технические навыки): оценка от 1 до 10\n"
-    f"- Доменные навыки (опыт в отрасли/специализации): оценка от 1 до 10\n"
-    f"- Общая релевантность кандидата вакансии: оценка от 1 до 10. Учитывай суммарный опыт, хард скилы, домен\n"
-    f"- Объяснение, почему была поставлена такая оценка по общей релевантности\n"
-    f"Верни ответ в формате JSON на русском языке: список объектов с полями name, phone, location, hard_skills, domain_skills, relevance.\n\n"
-    f"Кандидаты:\n" + "\n\n---\n\n".join(candidates_contexts)
-)
-
-llm = ChatOpenAI(
-    base_url="http://localhost:11434/v1",
-    api_key="token-abc",
-    model="gpt-oss:20b",
-    temperature=0.2,
-    top_p=0.8,
-    max_tokens=2048,
-    reasoning_effort="low",
-)
-
-result = llm.invoke(full_context)
-
-print(result.content)
+        logger.info(f"Создано {len(documents)} документов для загрузки в Qdrant")
+        return documents

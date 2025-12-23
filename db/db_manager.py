@@ -1,4 +1,5 @@
 import logging
+from typing import Dict
 
 import pandas as pd
 import psycopg2
@@ -9,13 +10,39 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DB_CONFIG = {
-    "host": "localhost",
-    "port": 5432,
-    "database": "estaff",
-    "user": "postgres",
-    "password": "postgres",
-}
+
+def get_db_config() -> Dict[str, str]:
+    """
+    Возвращает конфигурацию БД.
+    Используется для обратной совместимости со старым кодом.
+    В новых модулях рекомендуется использовать config.settings.
+    """
+    from config.settings import settings
+
+    return {
+        "host": settings.db_host,
+        "port": settings.db_port,
+        "database": settings.db_name,
+        "user": settings.db_user,
+        "password": settings.db_password,
+    }
+
+
+# Для обратной совместимости
+try:
+    DB_CONFIG = get_db_config()
+except Exception:
+    # Если не удалось загрузить настройки, используем дефолтные значения
+    logger.warning(
+        "Не удалось загрузить настройки из config, использую дефолтные значения"
+    )
+    DB_CONFIG = {
+        "host": "localhost",
+        "port": 5432,
+        "database": "estaff",
+        "user": "postgres",
+        "password": "postgres",
+    }
 
 
 def insert_candidates(df: pd.DataFrame, db_config):
