@@ -50,18 +50,36 @@ class VectorStoreService:
         Получает информацию о коллекции, включая количество точек.
         
         Returns:
-            dict: Словарь с информацией о коллекции (points_count, collection_name)
+            dict: Словарь с информацией о коллекции (points_count, collection_name, exists)
         """
         try:
             client = QdrantClient(url=self.qdrant_url)
-            collection_info = client.get_collection(self.collection_name)
             
-            return {
-                "points_count": collection_info.points_count,
-                "collection_name": self.collection_name,
-            }
+            # Пытаемся получить информацию о коллекции
+            # Если коллекция не существует, get_collection выбросит исключение
+            try:
+                collection_info = client.get_collection(self.collection_name)
+                return {
+                    "points_count": collection_info.points_count,
+                    "collection_name": self.collection_name,
+                    "exists": True,
+                }
+            except Exception as collection_error:
+                # Проверяем, является ли это ошибкой "коллекция не найдена"
+                error_str = str(collection_error).lower()
+                if "not found" in error_str or "does not exist" in error_str:
+                    logger.warning(f"Коллекция {self.collection_name} не найдена")
+                    return {
+                        "points_count": 0,
+                        "collection_name": self.collection_name,
+                        "exists": False,
+                    }
+                else:
+                    # Если это другая ошибка, пробрасываем её дальше
+                    raise
+                    
         except Exception as e:
-            logger.error(f"Ошибка при получении информации о коллекции: {e}")
+            logger.error(f"Ошибка при получении информации о коллекции: {e}", exc_info=True)
             raise RuntimeError(f"Не удалось получить информацию о коллекции: {e}")
 
     def create_or_update_collection(

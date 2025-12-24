@@ -277,27 +277,55 @@ function escapeHtml(text) {
 async function updateCollectionStatus() {
     const statusElement = document.getElementById('collectionStatus');
     
+    if (!statusElement) {
+        console.error('Элемент collectionStatus не найден');
+        return;
+    }
+    
     try {
+        console.log('Запрос статуса коллекции...');
         const response = await fetch('/api/v1/collection/status');
+        console.log('Ответ получен, статус:', response.status, response.statusText);
         
         if (!response.ok) {
-            throw new Error('Не удалось получить статус коллекции');
+            const errorText = await response.text();
+            console.error('Ошибка HTTP:', response.status, errorText);
+            throw new Error(`HTTP ${response.status}: ${errorText.substring(0, 50)}`);
         }
         
         const data = await response.json();
+        console.log('Данные статуса коллекции:', data);
         
         if (data.status === 'ok') {
             const pointsCount = data.points_count || 0;
-            statusElement.innerHTML = `
-                <span class="badge bg-success">Коллекция: ${pointsCount.toLocaleString('ru-RU')} точек</span>
-            `;
+            const exists = data.exists !== false; // По умолчанию true
+            
+            if (exists && pointsCount > 0) {
+                statusElement.innerHTML = `
+                    <span class="badge bg-success">Коллекция: ${pointsCount.toLocaleString('ru-RU')} точек</span>
+                `;
+            } else if (exists && pointsCount === 0) {
+                statusElement.innerHTML = `
+                    <span class="badge bg-info">Коллекция пуста (0 точек)</span>
+                `;
+            } else {
+                statusElement.innerHTML = `
+                    <span class="badge bg-warning text-dark">Коллекция не создана</span>
+                `;
+            }
         } else {
-            throw new Error(data.error || 'Неизвестная ошибка');
+            // Если статус не ok, показываем ошибку
+            const errorMsg = data.error || 'Неизвестная ошибка';
+            console.error('Ошибка получения статуса коллекции:', errorMsg);
+            statusElement.innerHTML = `
+                <span class="badge bg-danger" title="${escapeHtml(errorMsg)}">Ошибка: ${escapeHtml(errorMsg.substring(0, 30))}...</span>
+            `;
         }
     } catch (error) {
         console.error('Ошибка получения статуса коллекции:', error);
+        const errorMsg = error.message || 'Неизвестная ошибка';
         statusElement.innerHTML = `
-            <span class="badge bg-danger">Статус недоступен</span>
+            <span class="badge bg-danger" title="${escapeHtml(errorMsg)}">Ошибка подключения</span>
         `;
     }
 }

@@ -277,15 +277,17 @@ async def get_collection_status():
             content={
                 "status": "ok",
                 "collection_name": collection_info["collection_name"],
-                "points_count": collection_info["points_count"],
+                "points_count": collection_info.get("points_count", 0),
+                "exists": collection_info.get("exists", True),
             },
         )
     except Exception as e:
-        logger.error(f"Ошибка при получении статуса коллекции: {e}")
+        logger.error(f"Ошибка при получении статуса коллекции: {e}", exc_info=True)
         return JSONResponse(
-            status_code=500,
+            status_code=200,  # Возвращаем 200, чтобы UI мог обработать ошибку
             content={
                 "status": "error",
                 "error": str(e),
+                "points_count": 0,
             },
         )
