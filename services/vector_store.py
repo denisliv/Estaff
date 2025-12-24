@@ -45,6 +45,25 @@ class VectorStoreService:
             )
             raise ConnectionError(f"Не удалось подключиться к Qdrant: {e}")
 
+    def get_collection_info(self) -> dict:
+        """
+        Получает информацию о коллекции, включая количество точек.
+        
+        Returns:
+            dict: Словарь с информацией о коллекции (points_count, collection_name)
+        """
+        try:
+            client = QdrantClient(url=self.qdrant_url)
+            collection_info = client.get_collection(self.collection_name)
+            
+            return {
+                "points_count": collection_info.points_count,
+                "collection_name": self.collection_name,
+            }
+        except Exception as e:
+            logger.error(f"Ошибка при получении информации о коллекции: {e}")
+            raise RuntimeError(f"Не удалось получить информацию о коллекции: {e}")
+
     def create_or_update_collection(
         self, documents: List[Document]
     ) -> QdrantVectorStore:

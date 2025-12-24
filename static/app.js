@@ -7,6 +7,9 @@ document.addEventListener('DOMContentLoaded', function() {
     resumeModal = new bootstrap.Modal(document.getElementById('resumeModal'));
     initWebSocket();
     initEventListeners();
+    updateCollectionStatus();
+    // Обновляем статус коллекции каждые 30 секунд
+    setInterval(updateCollectionStatus, 30000);
 });
 
 // Инициализация WebSocket для логов
@@ -268,5 +271,34 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// Обновление статуса коллекции
+async function updateCollectionStatus() {
+    const statusElement = document.getElementById('collectionStatus');
+    
+    try {
+        const response = await fetch('/api/v1/collection/status');
+        
+        if (!response.ok) {
+            throw new Error('Не удалось получить статус коллекции');
+        }
+        
+        const data = await response.json();
+        
+        if (data.status === 'ok') {
+            const pointsCount = data.points_count || 0;
+            statusElement.innerHTML = `
+                <span class="badge bg-success">Коллекция: ${pointsCount.toLocaleString('ru-RU')} точек</span>
+            `;
+        } else {
+            throw new Error(data.error || 'Неизвестная ошибка');
+        }
+    } catch (error) {
+        console.error('Ошибка получения статуса коллекции:', error);
+        statusElement.innerHTML = `
+            <span class="badge bg-danger">Статус недоступен</span>
+        `;
+    }
 }
 

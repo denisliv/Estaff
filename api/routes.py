@@ -230,24 +230,62 @@ async def websocket_logs(websocket: WebSocket):
 @router.get("/health")
 async def health_check():
     """Проверка здоровья сервиса."""
+    health_status = {
+        "status": "healthy",
+        "qdrant": "disconnected",
+        "postgres": "disconnected",
+    }
+    status_code = 200
+    
+    # Проверяем соединение с Qdrant
     try:
-        # Проверяем соединение с Qdrant
         vector_store_service.check_connection()
+        health_status["qdrant"] = "connected"
+    except Exception as e:
+        logger.error(f"Qdrant health check failed: {e}")
+        health_status["qdrant"] = f"error: {str(e)}"
+        health_status["status"] = "unhealthy"
+        status_code = 503
+    
+    # Проверяем соединение с PostgreSQL
+    try:
+        db_config = get_db_config()
+        with psycopg2.connect(**db_config) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+        health_status["postgres"] = "connected"
+    except Exception as e:
+        logger.error(f"PostgreSQL health check failed: {e}")
+        health_status["postgres"] = f"error: {str(e)}"
+        health_status["status"] = "unhealthy"
+        status_code = 503
+    
+    return JSONResponse(
+        status_code=status_code,
+        content=health_status,
+    )
 
+
+@router.get("/collection/status")
+async def get_collection_status():
+    """Получает статус коллекции Qdrant, включая количество точек."""
+    try:
+        collection_info = vector_store_service.get_collection_info()
         return JSONResponse(
             status_code=200,
             content={
-                "status": "healthy",
-                "qdrant": "connected",
+                "status": "ok",
+                "collection_name": collection_info["collection_name"],
+                "points_count": collection_info["points_count"],
             },
         )
-
     except Exception as e:
-        logger.error(f"Health check failed: {e}")
+        logger.error(f"Ошибка при получении статуса коллекции: {e}")
         return JSONResponse(
-            status_code=503,
+            status_code=500,
             content={
-                "status": "unhealthy",
+                "status": "error",
                 "error": str(e),
             },
         )
