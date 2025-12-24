@@ -4,10 +4,17 @@ let resumeModal = null;
 
 // Инициализация при загрузке страницы
 document.addEventListener('DOMContentLoaded', function() {
+    console.log('DOM загружен, инициализация...');
     resumeModal = new bootstrap.Modal(document.getElementById('resumeModal'));
     initWebSocket();
     initEventListeners();
-    updateCollectionStatus();
+    
+    // Небольшая задержка, чтобы убедиться, что DOM полностью готов
+    setTimeout(function() {
+        console.log('Вызов updateCollectionStatus...');
+        updateCollectionStatus();
+    }, 100);
+    
     // Обновляем статус коллекции каждые 30 секунд
     setInterval(updateCollectionStatus, 30000);
 });
@@ -275,12 +282,15 @@ function escapeHtml(text) {
 
 // Обновление статуса коллекции
 async function updateCollectionStatus() {
+    console.log('updateCollectionStatus вызвана');
     const statusElement = document.getElementById('collectionStatus');
     
     if (!statusElement) {
         console.error('Элемент collectionStatus не найден');
         return;
     }
+    
+    console.log('Элемент найден:', statusElement);
     
     try {
         console.log('Запрос статуса коллекции...');
@@ -295,38 +305,58 @@ async function updateCollectionStatus() {
         
         const data = await response.json();
         console.log('Данные статуса коллекции:', data);
+        console.log('Текущий innerHTML элемента:', statusElement.innerHTML);
+        
+        // Очищаем элемент перед обновлением
+        statusElement.innerHTML = '';
+        console.log('Элемент очищен');
         
         if (data.status === 'ok') {
             const pointsCount = data.points_count || 0;
             const exists = data.exists !== false; // По умолчанию true
             
+            let badgeClass = 'badge ';
+            let badgeText = '';
+            
             if (exists && pointsCount > 0) {
-                statusElement.innerHTML = `
-                    <span class="badge bg-success">Коллекция: ${pointsCount.toLocaleString('ru-RU')} точек</span>
-                `;
+                badgeClass += 'bg-success';
+                badgeText = `Коллекция: ${pointsCount.toLocaleString('ru-RU')} точек`;
             } else if (exists && pointsCount === 0) {
-                statusElement.innerHTML = `
-                    <span class="badge bg-info">Коллекция пуста (0 точек)</span>
-                `;
+                badgeClass += 'bg-info';
+                badgeText = 'Коллекция пуста (0 точек)';
             } else {
-                statusElement.innerHTML = `
-                    <span class="badge bg-warning text-dark">Коллекция не создана</span>
-                `;
+                badgeClass += 'bg-warning text-dark';
+                badgeText = 'Коллекция не создана';
             }
+            
+            // Создаем badge элемент
+            const badge = document.createElement('span');
+            badge.className = badgeClass;
+            badge.textContent = badgeText;
+            
+            // Очищаем и добавляем badge
+            statusElement.innerHTML = '';
+            statusElement.appendChild(badge);
+            
+            console.log('Статус обновлен успешно, новый innerHTML:', statusElement.innerHTML);
+            console.log('Элемент после обновления:', statusElement);
+            console.log('Badge элемент:', badge);
         } else {
             // Если статус не ok, показываем ошибку
             const errorMsg = data.error || 'Неизвестная ошибка';
             console.error('Ошибка получения статуса коллекции:', errorMsg);
-            statusElement.innerHTML = `
-                <span class="badge bg-danger" title="${escapeHtml(errorMsg)}">Ошибка: ${escapeHtml(errorMsg.substring(0, 30))}...</span>
-            `;
+            const safeErrorMsg = errorMsg.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+            statusElement.innerHTML = `<span class="badge bg-danger" title="${safeErrorMsg}">Ошибка: ${safeErrorMsg.substring(0, 30)}...</span>`;
         }
     } catch (error) {
         console.error('Ошибка получения статуса коллекции:', error);
         const errorMsg = error.message || 'Неизвестная ошибка';
-        statusElement.innerHTML = `
-            <span class="badge bg-danger" title="${escapeHtml(errorMsg)}">Ошибка подключения</span>
-        `;
+        
+        // Очищаем элемент перед обновлением
+        statusElement.innerHTML = '';
+        const safeErrorMsg = errorMsg.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        statusElement.innerHTML = `<span class="badge bg-danger" title="${safeErrorMsg}">Ошибка подключения</span>`;
+        console.log('Ошибка обработана, новый innerHTML:', statusElement.innerHTML);
     }
 }
 
